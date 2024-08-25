@@ -2,13 +2,15 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"log"
+	"os"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DatabaseConnection struct {
-	conn      *pgx.Conn
+	pool      *pgxpool.Pool
 	connected bool
 
 	baseName string
@@ -36,12 +38,12 @@ func (dbConn *DatabaseConnection) SetPassword(password string) {
 func (dbConn *DatabaseConnection) OpenConnection() error {
 	var err error
 	connectionString := "postgresql://" + dbConn.userName + ":" + dbConn.password + "@" + dbConn.baseHost + ":5432/" + dbConn.baseName
-	dbConn.conn, err = pgx.Connect(context.Background(), connectionString)
+	dbConn.pool, err = pgxpool.New(context.Background(), connectionString)
 	if err != nil {
 		return err
 	}
 
-	if err := dbConn.conn.Ping(context.Background()); err != nil {
+	if err := dbConn.pool.Ping(context.Background()); err != nil {
 		return err
 	}
 	dbConn.connected = true
@@ -49,6 +51,36 @@ func (dbConn *DatabaseConnection) OpenConnection() error {
 }
 
 func (dbConn *DatabaseConnection) CloseConnection() {
-	dbConn.conn.Close(context.Background())
-	fmt.Println("Connection Closed")
+	DBlog := log.New(os.Stdout, "DB:", log.LstdFlags)
+	dbConn.pool.Close()
+	DBlog.Println("Connection Closed")
+}
+
+func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword []byte, role int) error {
+	rows, err := dbConn.pool.Query(context.Background(), "select \"Users_username\" from public.\"Users\"")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var rowUserName string
+	for rows.Next() {
+		rows.Scan(&rowUserName)
+		if rowUserName == newUserName {
+			return errors.New("username already exists in database")
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		return err
+	}
+	rows.Close()
+
+	_, err = dbConn.pool.Exec(context.Background(),
+		"Insert into public.\"Users\" (\"Users_username\", \"Users_pswdmd5\", \"Users_roleId\") values ($1,$2,$3)",
+		newUserName, newPassword, role)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
