@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"log"
 	"net"
@@ -32,11 +33,14 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn) {
 		err = handleHelloRequest(tcpConn)
 	case 0x10:
 		err = handleCreateUserRequest(rcvMsg[1:], dbConn, tcpConn)
+	case 0x20:
+		err = handleAuthentificationRequest(rcvMsg[1:], dbConn, tcpConn)
+	default:
+		hLog.Printf("Unknown command: %v\n", rcvMsg[0])
 	}
 
 	if err != nil {
 		hLog.Printf("Failed to handle request: %v\n", err)
-		tcpConn.Write([]byte{0xF0, 0x02}) // 02 - request handling error
 		return
 	}
 }
@@ -76,6 +80,7 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 	err := dbConn.insertNewUser(newUserName, newPwdHash, roleID)
 
 	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x02}) //  02 - request handling error
 		return err
 	}
 
@@ -83,5 +88,38 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func handleAuthentificationRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
+	var (
+		userNameLength uint8
+		pwdHashLength  uint8
+		loginUserName  string
+		loginPwdHash   []byte
+	)
+
+	userNameLength = request[0]
+	loginUserName = string(request[1 : userNameLength+1])
+	pwdHashLength = request[userNameLength+1]
+	loginPwdHash = request[userNameLength+1 : pwdHashLength+userNameLength+1]
+
+	userRoleId, userToken, err := dbConn.userAuthentification(loginUserName, loginPwdHash)
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x02})
+		return err
+	}
+	var answer []byte
+	token := make([]byte, 4)
+	binary.LittleEndian.PutUint32(token, uint32(userToken))
+	answer = append(answer, 0x0F, 0x00, uint8(userRoleId))
+	answer = append(answer, token...)
+
+	_, err = tcpConn.Write(answer)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
