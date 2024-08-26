@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 func main() {
@@ -11,7 +12,7 @@ func main() {
 	var dbConn DatabaseConnection
 
 	mainlog.Print("Reading database parameters...")
-	if err := getDatabaseParams(&dbConn); err != nil {
+	if err := setDatabaseParams(&dbConn); err != nil {
 		mainlog.Println("Failed")
 		mainlog.Printf("Unable to connect to database: %v\n", err)
 		return
@@ -28,6 +29,12 @@ func main() {
 	mainlog.Println("Sucsess")
 	defer dbConn.CloseConnection()
 
+	err = dbConn.clearConnectionTable()
+	if err != nil {
+		mainlog.Println("Failed to clear Connections table")
+		return
+	}
+
 	mainlog.Print("Attempting to start server...")
 
 	tcpAddr, listener, err := createTcpServerConnection("3241")
@@ -38,17 +45,31 @@ func main() {
 	}
 	mainlog.Println("Sucsess")
 	mainlog.Printf("Server is online on %v\n", tcpAddr)
+
+	ticker := time.NewTicker(time.Minute * 5)
+	tickerDone := make(chan bool)
+	startConnectionsCleanser(&dbConn, ticker, tickerDone)
+	defer stopConnectionCleanser(ticker, tickerDone)
+
+	stopServer := make(chan bool)
+
 	for {
+		select {
+		case <-stopServer:
+			return
+		default:
+		}
+		listener.SetDeadline(time.Now().Add(time.Second * 1))
 		tcpConn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
-		go HandleClient(dbConn, tcpConn)
+		go HandleClient(dbConn, tcpConn, stopServer)
 	}
-
 }
 
-func getDatabaseParams(dbConn *DatabaseConnection) error {
+// set database params to connect to database
+func setDatabaseParams(dbConn *DatabaseConnection) error {
 	params, err := ReadParamsFromFile("DatabaseParams.txt")
 
 	if err != nil {
@@ -61,6 +82,7 @@ func getDatabaseParams(dbConn *DatabaseConnection) error {
 	return nil
 }
 
+// create tcp connection to which clients can connect
 func createTcpServerConnection(port string) (*net.TCPAddr, *net.TCPListener, error) {
 	service := "localhost:" + port
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", service)
@@ -72,4 +94,25 @@ func createTcpServerConnection(port string) (*net.TCPAddr, *net.TCPListener, err
 		return nil, nil, err
 	}
 	return tcpAddr, listener, nil
+}
+
+// starts ticker to close expired sessions and remove them from database
+func startConnectionsCleanser(dbConn *DatabaseConnection, ticker *time.Ticker, done chan bool) {
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				dbConn.closeExpiredSession()
+			}
+		}
+	}()
+}
+
+// stops ticker which closes sessions over time
+func stopConnectionCleanser(ticker *time.Ticker, done chan bool) {
+	ticker.Stop()
+	done <- true
 }

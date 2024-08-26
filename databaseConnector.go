@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// struct for operations with main database
 type DatabaseConnection struct {
 	pool      *pgxpool.Pool
 	connected bool
@@ -23,22 +24,27 @@ type DatabaseConnection struct {
 	password string
 }
 
+// sets database name
 func (dbConn *DatabaseConnection) SetBaseName(baseName string) {
 	dbConn.baseName = baseName
 }
 
+// sets database host address
 func (dbConn *DatabaseConnection) SetBaseHost(baseHost string) {
 	dbConn.baseHost = baseHost
 }
 
+// sets username to connect to database
 func (dbConn *DatabaseConnection) SetUserName(userName string) {
 	dbConn.userName = userName
 }
 
+// sets password to connect to database
 func (dbConn *DatabaseConnection) SetPassword(password string) {
 	dbConn.password = password
 }
 
+// opens connecction to database and cretes connection pool
 func (dbConn *DatabaseConnection) OpenConnection() error {
 	var err error
 	connectionString := "postgresql://" + dbConn.userName + ":" + dbConn.password + "@" + dbConn.baseHost + ":5432/" + dbConn.baseName
@@ -54,12 +60,14 @@ func (dbConn *DatabaseConnection) OpenConnection() error {
 	return nil
 }
 
+// closes connection to database
 func (dbConn *DatabaseConnection) CloseConnection() {
 	DBlog := log.New(os.Stdout, "DB:", log.LstdFlags)
 	dbConn.pool.Close()
 	DBlog.Println("Connection Closed")
 }
 
+// inserts new user to Users table with given name, password (md5 hash) and role (roles are defined in Roles table)
 func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword []byte, role int) error {
 	rows, err := dbConn.pool.Query(context.Background(), "select \"Users_username\" from public.\"Users\"")
 	if err != nil {
@@ -89,6 +97,7 @@ func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword 
 	return nil
 }
 
+// checks users authentification factors, returns his role id, according to Users table and current session token
 func (dbConn *DatabaseConnection) userAuthentification(loginUserName string, loginPassword []byte) (int, int32, error) {
 	rows, err := dbConn.pool.Query(context.Background(), "select \"Users_username\", \"Users_pswdmd5\", \"Users_roleId\" from public.\"Users\"")
 	if err != nil {
@@ -104,7 +113,6 @@ func (dbConn *DatabaseConnection) userAuthentification(loginUserName string, log
 		rows.Scan(&rowUserName, &rowPwdHash, &rowRoleId)
 		if rowUserName == loginUserName {
 			break
-			// user with this username exists
 		}
 	}
 	err = rows.Err()
@@ -121,14 +129,29 @@ func (dbConn *DatabaseConnection) userAuthentification(loginUserName string, log
 		return -1, -1, errors.New("incorrect password")
 	}
 
+	alreadyConnected, err := dbConn.checkConnection(loginUserName)
+	if err != nil {
+		return -1, -1, errors.New("failed to check existing connection")
+	}
+
+	if alreadyConnected {
+		return -1, -1, errors.New("user is already connected")
+	}
+
 	userToken, err := dbConn.generateToken()
 	if err != nil {
 		return -1, -1, errors.New("failed to generate token for user")
 	}
 
+	err = dbConn.saveToken(loginUserName, userToken)
+	if err != nil {
+		return -1, -1, errors.New("failed to save token for user")
+	}
+
 	return rowRoleId, userToken, nil
 }
 
+// generates token for current session
 func (dbConn *DatabaseConnection) generateToken() (int32, error) {
 	for {
 		r := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -143,4 +166,115 @@ func (dbConn *DatabaseConnection) generateToken() (int32, error) {
 			return 0, err
 		}
 	}
+}
+
+// creates record in Connections table, where userId, connection start time, connection expires time and current token are saved
+func (dbConn *DatabaseConnection) saveToken(user string, token int32) error {
+	tx, err := dbConn.pool.Begin(context.Background())
+	if err != nil {
+		return err
+	}
+	var userId int
+	err = tx.QueryRow(context.Background(), "select \"Users_id\" from public.\"Users\" where \"Users_username\" = $1", user).Scan(&userId)
+	if err != nil {
+		tx.Rollback(context.Background())
+		if err == pgx.ErrNoRows {
+			return errors.New("failed to find user among registered Users")
+		}
+		return err
+	}
+
+	_, err = tx.Exec(context.Background(),
+		"insert into public.\"Connections\" (\"Connection_userId\", \"Connection_dt\", \"Connection_expires\", \"Connection_token\") values ($1,$2,$3,$4)",
+		userId, time.Now(), time.Now().Add(time.Minute*15), token)
+	if err != nil {
+		tx.Rollback(context.Background())
+		return err
+	}
+	err = tx.Commit(context.Background())
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// checks if user is already connected to server
+func (dbConn *DatabaseConnection) checkConnection(user string) (bool, error) {
+	tx, err := dbConn.pool.Begin(context.Background())
+	if err != nil {
+		return false, err
+	}
+	var userId int
+	err = tx.QueryRow(context.Background(), "select \"Users_id\" from public.\"Users\" where \"Users_username\" = $1", user).Scan(&userId)
+	if err != nil {
+		tx.Rollback(context.Background())
+		if err == pgx.ErrNoRows {
+			return false, errors.New("failed to find user among registered Users")
+		}
+		return false, err
+	}
+
+	err = tx.QueryRow(context.Background(),
+		"select \"Connection_userId\" from public.\"Connections\" where \"Connection_userId\" = $1",
+		userId).Scan(&userId)
+	if err != nil {
+		tx.Rollback(context.Background())
+		if err == pgx.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	err = tx.Commit(context.Background())
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// clears Connections table. Executes every time server starts
+func (dbConn *DatabaseConnection) clearConnectionTable() error {
+	_, err := dbConn.pool.Exec(context.Background(), "delete from public.\"Connections\"")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// removes connection with given token from database
+func (dbConn *DatabaseConnection) removeConnection(token uint32) error {
+	_, err := dbConn.pool.Exec(context.Background(),
+		"delete from public.\"Connections\" where \"Connection_token\" = $1",
+		token)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// closes expired sessions, need to be executed over time
+func (dbConn *DatabaseConnection) closeExpiredSession() error {
+	_, err := dbConn.pool.Exec(context.Background(), "delete from public.\"Connections\" where \"Connection_expires\" < $1", time.Now())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// return role of conencted user refferring to his token
+func (dbConn *DatabaseConnection) getRole(token int) (string, error) {
+	var role string
+	err := dbConn.pool.QueryRow(context.Background(),
+		"select \"Roles_name\" from public.\"Roles\" r join public.\"Users\" u on r.\"Roles_id\"=u.\"Users_id\" join public.\"Connections\" c on c.\"Connection_userId\"=u.\"Users_id\" where c.\"Connection_token\"=$1",
+		token).Scan(&role)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", errors.New("no such token in database")
+		}
+		return "", err
+	}
+
+	return role, nil
 }

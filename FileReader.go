@@ -6,6 +6,7 @@ import (
 	"os"
 )
 
+// reads database paramemters from file
 func ReadParamsFromFile(fileName string) ([]string, error) {
 	var paramSlice []string
 

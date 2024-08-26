@@ -10,7 +10,8 @@ import (
 
 var hLog *log.Logger
 
-func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn) {
+// handler for every client request
+func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan bool) {
 	defer tcpConn.Close()
 
 	hLog = log.New(os.Stderr, "handler:", log.LstdFlags)
@@ -35,6 +36,10 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn) {
 		err = handleCreateUserRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x20:
 		err = handleAuthentificationRequest(rcvMsg[1:], dbConn, tcpConn)
+	case 0x21:
+		err = handleLogoutRequest(rcvMsg[1:], dbConn, tcpConn)
+	case 0x01:
+		err = handleShutDownServer(rcvMsg[1:], dbConn, stopServer)
 	default:
 		hLog.Printf("Unknown command: %v\n", rcvMsg[0])
 	}
@@ -45,6 +50,7 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn) {
 	}
 }
 
+// request to test connection, replies to client with OK byte
 func handleHelloRequest(tcpConn net.Conn) error {
 	_, err := tcpConn.Write([]byte{0x0F, 0x00}) // 0 - no error
 	if err != nil {
@@ -53,6 +59,7 @@ func handleHelloRequest(tcpConn net.Conn) error {
 	return nil
 }
 
+// request to create new user, replies to client with OK byte
 func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
 	var (
 		roleID         int
@@ -61,7 +68,17 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 		newUserName    string
 		newPwdHash     []byte
 	)
-	switch request[0] {
+	token := binary.LittleEndian.Uint32(request[0:4])
+	role, err := dbConn.getRole(int(token))
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x02}) //  02 - request handling error
+		return err
+	}
+	if role != "SUPERUSER" {
+		tcpConn.Write([]byte{0xF0, 0x02}) //  02 - request handling error
+		return errors.New("not enough rights to execute command")
+	}
+	switch request[4] {
 	case 0x11:
 		roleID = 1
 	case 0x12:
@@ -69,15 +86,16 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 	case 0x13:
 		roleID = 3
 	default:
-		// unknown role recived
+		tcpConn.Write([]byte{0xF0, 0x02}) //  02 - request handling error
 		return errors.New("unknown role recived")
 	}
-	userNameLength = request[1]
-	newUserName = string(request[2 : userNameLength+2])
-	pwdHashLength = request[userNameLength+2]
-	newPwdHash = request[userNameLength+2 : pwdHashLength+userNameLength+2]
 
-	err := dbConn.insertNewUser(newUserName, newPwdHash, roleID)
+	userNameLength = request[5]
+	newUserName = string(request[6 : userNameLength+6])
+	pwdHashLength = request[userNameLength+6]
+	newPwdHash = request[userNameLength+6 : pwdHashLength+userNameLength+6]
+
+	err = dbConn.insertNewUser(newUserName, newPwdHash, roleID)
 
 	if err != nil {
 		tcpConn.Write([]byte{0xF0, 0x02}) //  02 - request handling error
@@ -92,6 +110,7 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 	return nil
 }
 
+// request to login by user, replies with OK flag and generated token
 func handleAuthentificationRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
 	var (
 		userNameLength uint8
@@ -121,5 +140,37 @@ func handleAuthentificationRequest(request []byte, dbConn DatabaseConnection, tc
 		return err
 	}
 
+	return nil
+}
+
+// request to logout
+func handleLogoutRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
+	token := request[:4]
+	err := dbConn.removeConnection(binary.LittleEndian.Uint32(token))
+	if err != nil {
+		_, err = tcpConn.Write([]byte{0xF0, 0x02})
+		return err
+	}
+
+	_, err = tcpConn.Write([]byte{0x0F, 0x00})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// request to shut down server
+func handleShutDownServer(request []byte, dbConn DatabaseConnection, stopServer chan<- bool) error {
+	token := binary.LittleEndian.Uint32(request[0:4])
+	role, err := dbConn.getRole(int(token))
+	if err != nil {
+		return err
+	}
+	if role != "SUPERUSER" {
+		return errors.New("not enough rights to execute command")
+	}
+
+	stopServer <- true
 	return nil
 }
