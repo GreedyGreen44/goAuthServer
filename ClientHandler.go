@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 var hLog *log.Logger
@@ -39,7 +40,7 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan b
 	case 0x21:
 		err = handleLogoutRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x01:
-		err = handleShutDownServer(rcvMsg[1:], dbConn, stopServer)
+		err = handleShutDownServer(rcvMsg[1:], dbConn, stopServer, tcpConn)
 	default:
 		hLog.Printf("Unknown command: %v\n", rcvMsg[0])
 	}
@@ -161,16 +162,19 @@ func handleLogoutRequest(request []byte, dbConn DatabaseConnection, tcpConn net.
 }
 
 // request to shut down server
-func handleShutDownServer(request []byte, dbConn DatabaseConnection, stopServer chan<- bool) error {
+func handleShutDownServer(request []byte, dbConn DatabaseConnection, stopServer chan<- bool, tcpConn net.Conn) error {
 	token := binary.LittleEndian.Uint32(request[0:4])
 	role, err := dbConn.getRole(int(token))
 	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x03})
 		return err
 	}
 	if role != "SUPERUSER" {
+		tcpConn.Write([]byte{0xF0, 0x02})
 		return errors.New("not enough rights to execute command")
 	}
-
+	tcpConn.Write([]byte{0x0F, 0x00})
+	time.Sleep(time.Second)
 	stopServer <- true
 	return nil
 }
