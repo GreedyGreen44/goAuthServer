@@ -173,7 +173,10 @@ func handleShutDownServer(request []byte, dbConn DatabaseConnection, stopServer 
 		tcpConn.Write([]byte{0xF0, 0x02})
 		return errors.New("not enough rights to execute command")
 	}
-	tcpConn.Write([]byte{0x0F, 0x00})
+	_, err = tcpConn.Write([]byte{0x0F, 0x00})
+	if err != nil {
+		return err
+	}
 	time.Sleep(time.Second)
 	stopServer <- true
 	return nil

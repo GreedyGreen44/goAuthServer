@@ -47,7 +47,7 @@ func main() {
 	mainlog.Printf("Server is online on %v\n", tcpAddr)
 
 	ticker := time.NewTicker(time.Minute * 5)
-	tickerDone := make(chan bool)
+	tickerDone := make(chan bool, 1)
 	startConnectionsCleanser(&dbConn, ticker, tickerDone)
 	defer stopConnectionCleanser(ticker, tickerDone)
 
