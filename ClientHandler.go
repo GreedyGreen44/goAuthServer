@@ -157,7 +157,7 @@ func handleAuthenticationRequest(request []byte, dbConn DatabaseConnection, tcpC
 	pwdHashLength = request[userNameLength+1]
 	loginPwdHash = request[userNameLength+1 : pwdHashLength+userNameLength+1]
 
-	userRoleId, userToken, err := dbConn.userAuthentification(loginUserName, loginPwdHash)
+	userRoleId, userToken, err := dbConn.userAuthentication(loginUserName, loginPwdHash)
 	if err != nil {
 		tcpConn.Write([]byte{0xF0, 0x02})
 		return err

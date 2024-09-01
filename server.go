@@ -17,7 +17,7 @@ func main() {
 		mainlog.Printf("Unable to connect to database: %v\n", err)
 		return
 	}
-	mainlog.Println("Sucsess")
+	mainlog.Println("Success")
 	mainlog.Print("Attempting to connect to database...")
 
 	err := dbConn.OpenConnection()
@@ -26,7 +26,7 @@ func main() {
 		mainlog.Printf("Unable to connect to database: %v\n", err)
 		return
 	}
-	mainlog.Println("Sucsess")
+	mainlog.Println("Success")
 	defer dbConn.CloseConnection()
 
 	err = dbConn.clearConnectionTable()

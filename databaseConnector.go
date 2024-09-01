@@ -44,7 +44,7 @@ func (dbConn *DatabaseConnection) SetPassword(password string) {
 	dbConn.password = password
 }
 
-// opens connecction to database and cretes connection pool
+// opens connection to database and creates connection pool
 func (dbConn *DatabaseConnection) OpenConnection() error {
 	var err error
 	connectionString := "postgresql://" + dbConn.userName + ":" + dbConn.password + "@" + dbConn.baseHost + ":5432/" + dbConn.baseName
@@ -97,8 +97,8 @@ func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword 
 	return nil
 }
 
-// checks users authentification factors, returns his role id, according to Users table and current session token
-func (dbConn *DatabaseConnection) userAuthentification(loginUserName string, loginPassword []byte) (int, int32, error) {
+// checks users authentication factors, returns his role id, according to Users table and current session token
+func (dbConn *DatabaseConnection) userAuthentication(loginUserName string, loginPassword []byte) (int, int32, error) {
 	rows, err := dbConn.pool.Query(context.Background(), `select "Users_username", "Users_pswdmd5", "Users_roleId" 
 																from public."Users"`)
 	if err != nil {
@@ -244,7 +244,7 @@ func (dbConn *DatabaseConnection) checkConnection(user string) (bool, error) {
 	return true, nil
 }
 
-// clears Connections table. Executes every time server starts
+// clears Connections table. Executes everytime server starts
 func (dbConn *DatabaseConnection) clearConnectionTable() error {
 	_, err := dbConn.pool.Exec(context.Background(), `delete from public."Connections"`)
 	if err != nil {
