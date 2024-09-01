@@ -69,7 +69,7 @@ func (dbConn *DatabaseConnection) CloseConnection() {
 
 // inserts new user to Users table with given name, password (md5 hash) and role (roles are defined in Roles table)
 func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword []byte, role int) error {
-	rows, err := dbConn.pool.Query(context.Background(), "select \"Users_username\" from public.\"Users\"")
+	rows, err := dbConn.pool.Query(context.Background(), `select "Users_username" from public."Users"`)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword 
 	rows.Close()
 
 	_, err = dbConn.pool.Exec(context.Background(),
-		"Insert into public.\"Users\" (\"Users_username\", \"Users_pswdmd5\", \"Users_roleId\") values ($1,$2,$3)",
+		`Insert into public."Users" ("Users_username", "Users_pswdmd5", "Users_roleId") values ($1,$2,$3)`,
 		newUserName, newPassword, role)
 	if err != nil {
 		return err
@@ -99,7 +99,8 @@ func (dbConn *DatabaseConnection) insertNewUser(newUserName string, newPassword 
 
 // checks users authentification factors, returns his role id, according to Users table and current session token
 func (dbConn *DatabaseConnection) userAuthentification(loginUserName string, loginPassword []byte) (int, int32, error) {
-	rows, err := dbConn.pool.Query(context.Background(), "select \"Users_username\", \"Users_pswdmd5\", \"Users_roleId\" from public.\"Users\"")
+	rows, err := dbConn.pool.Query(context.Background(), `select "Users_username", "Users_pswdmd5", "Users_roleId" 
+																from public."Users"`)
 	if err != nil {
 		return -1, -1, err
 	}
@@ -158,9 +159,12 @@ func (dbConn *DatabaseConnection) generateToken() (int32, error) {
 		tokenInt := r.Int31()
 		var foundToken int32
 
-		err := dbConn.pool.QueryRow(context.Background(), "select \"Connection_token\" from public.\"Connections\" where \"Connection_token\" = $1", tokenInt).Scan(&foundToken)
+		err := dbConn.pool.QueryRow(context.Background(), `select "Connection_token" 
+																from public."Connections" 
+																where "Connection_token" = $1`,
+			tokenInt).Scan(&foundToken)
 		if err != nil {
-			if err == pgx.ErrNoRows {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return tokenInt, nil
 			}
 			return 0, err
@@ -175,17 +179,21 @@ func (dbConn *DatabaseConnection) saveToken(user string, token int32) error {
 		return err
 	}
 	var userId int
-	err = tx.QueryRow(context.Background(), "select \"Users_id\" from public.\"Users\" where \"Users_username\" = $1", user).Scan(&userId)
+	err = tx.QueryRow(context.Background(), `select "Users_id" 
+													from public."Users" 
+													where "Users_username" = $1`,
+		user).Scan(&userId)
 	if err != nil {
 		tx.Rollback(context.Background())
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return errors.New("failed to find user among registered Users")
 		}
 		return err
 	}
 
 	_, err = tx.Exec(context.Background(),
-		"insert into public.\"Connections\" (\"Connection_userId\", \"Connection_dt\", \"Connection_expires\", \"Connection_token\") values ($1,$2,$3,$4)",
+		`insert into public."Connections" ("Connection_userId", "Connection_dt", "Connection_expires", "Connection_token") 
+				values ($1,$2,$3,$4)`,
 		userId, time.Now(), time.Now().Add(time.Minute*15), token)
 	if err != nil {
 		tx.Rollback(context.Background())
@@ -206,21 +214,24 @@ func (dbConn *DatabaseConnection) checkConnection(user string) (bool, error) {
 		return false, err
 	}
 	var userId int
-	err = tx.QueryRow(context.Background(), "select \"Users_id\" from public.\"Users\" where \"Users_username\" = $1", user).Scan(&userId)
+	err = tx.QueryRow(context.Background(), `select "Users_id" 
+													from public."Users" 
+													where "Users_username" = $1`,
+		user).Scan(&userId)
 	if err != nil {
 		tx.Rollback(context.Background())
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return false, errors.New("failed to find user among registered Users")
 		}
 		return false, err
 	}
 
 	err = tx.QueryRow(context.Background(),
-		"select \"Connection_userId\" from public.\"Connections\" where \"Connection_userId\" = $1",
+		`select "Connection_userId" from public."Connections" where "Connection_userId" = $1`,
 		userId).Scan(&userId)
 	if err != nil {
 		tx.Rollback(context.Background())
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		return false, err
@@ -235,7 +246,7 @@ func (dbConn *DatabaseConnection) checkConnection(user string) (bool, error) {
 
 // clears Connections table. Executes every time server starts
 func (dbConn *DatabaseConnection) clearConnectionTable() error {
-	_, err := dbConn.pool.Exec(context.Background(), "delete from public.\"Connections\"")
+	_, err := dbConn.pool.Exec(context.Background(), `delete from public."Connections"`)
 	if err != nil {
 		return err
 	}
@@ -243,9 +254,9 @@ func (dbConn *DatabaseConnection) clearConnectionTable() error {
 }
 
 // removes connection with given token from database
-func (dbConn *DatabaseConnection) removeConnection(token uint32) error {
+func (dbConn *DatabaseConnection) removeConnectionViaToken(token uint32) error {
 	_, err := dbConn.pool.Exec(context.Background(),
-		"delete from public.\"Connections\" where \"Connection_token\" = $1",
+		`delete from public."Connections" where "Connection_token" = $1`,
 		token)
 	if err != nil {
 		return err
@@ -254,27 +265,57 @@ func (dbConn *DatabaseConnection) removeConnection(token uint32) error {
 	return nil
 }
 
-// closes expired sessions, need to be executed over time
-func (dbConn *DatabaseConnection) closeExpiredSession() error {
-	_, err := dbConn.pool.Exec(context.Background(), "delete from public.\"Connections\" where \"Connection_expires\" < $1", time.Now())
+func (dbConn *DatabaseConnection) removeConnectionViaUserName(removeUserName string) error {
+	_, err := dbConn.pool.Exec(context.Background(), `delete from public."Connections" c 
+									using public."Users" u 
+									where u."Users_id" = c."Connection_userId" and u."Users_username" = $1`, removeUserName)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-// return role of conencted user refferring to his token
+// closes expired sessions, need to be executed over time
+func (dbConn *DatabaseConnection) closeExpiredSession() error {
+	_, err := dbConn.pool.Exec(context.Background(), `delete from public."Connections" 
+       														where "Connection_expires" < $1`,
+		time.Now())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// return role of connected user referring to his token
 func (dbConn *DatabaseConnection) getRole(token int) (string, error) {
 	var role string
 	err := dbConn.pool.QueryRow(context.Background(),
-		"select \"Roles_name\" from public.\"Roles\" r join public.\"Users\" u on r.\"Roles_id\"=u.\"Users_id\" join public.\"Connections\" c on c.\"Connection_userId\"=u.\"Users_id\" where c.\"Connection_token\"=$1",
+		`select "Roles_name" from public."Roles" r 
+    			join public."Users" u on r."Roles_id"=u."Users_id" 
+    			join public."Connections" c on c."Connection_userId"=u."Users_id" 
+				where c."Connection_token"=$1`,
 		token).Scan(&role)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return "", errors.New("no such token in database")
 		}
 		return "", err
 	}
 
 	return role, nil
+}
+
+// remove user with removeUserName as name from database
+func (dbConn *DatabaseConnection) removeUser(removeUserName string) error {
+	err := dbConn.removeConnectionViaUserName(removeUserName)
+	if err != nil {
+		return err
+	}
+	_, err = dbConn.pool.Exec(context.Background(), `delete from public."Users"
+															where "Users_username" = $1`,
+		removeUserName)
+	if err != nil {
+		return err
+	}
+	return nil
 }

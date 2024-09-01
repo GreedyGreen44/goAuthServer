@@ -43,7 +43,7 @@ func main() {
 		mainlog.Printf("Unable to create tcp server: %v\n", err)
 		return
 	}
-	mainlog.Println("Sucsess")
+	mainlog.Println("Success")
 	mainlog.Printf("Server is online on %v\n", tcpAddr)
 
 	ticker := time.NewTicker(time.Minute * 5)

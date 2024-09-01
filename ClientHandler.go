@@ -6,12 +6,11 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
 )
 
 var hLog *log.Logger
 
-// handler for every client request
+// HandleClient handles every client request
 func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan bool) {
 	defer tcpConn.Close()
 
@@ -23,7 +22,7 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan b
 
 	_, err := tcpConn.Read(rcvMsg[0:])
 	if err != nil {
-		hLog.Println("Failed to recive message from client")
+		hLog.Println("Failed to receive message from client")
 		return
 	}
 	if !dbConn.connected {
@@ -35,8 +34,10 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan b
 		err = handleHelloRequest(tcpConn)
 	case 0x10:
 		err = handleCreateUserRequest(rcvMsg[1:], dbConn, tcpConn)
+	case 0x11:
+		err = handleRemoveUserRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x20:
-		err = handleAuthentificationRequest(rcvMsg[1:], dbConn, tcpConn)
+		err = handleAuthenticationRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x21:
 		err = handleLogoutRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x01:
@@ -88,7 +89,7 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 		roleID = 3
 	default:
 		tcpConn.Write([]byte{0xF0, 0x02}) //  02 - request handling error
-		return errors.New("unknown role recived")
+		return errors.New("unknown role received")
 	}
 
 	userNameLength = request[5]
@@ -111,8 +112,39 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 	return nil
 }
 
-// request to login by user, replies with OK flag and generated token
-func handleAuthentificationRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
+// handles request to remove user, replies with OK byte
+func handleRemoveUserRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
+	var ()
+
+	token := binary.LittleEndian.Uint32(request[0:4])
+	role, err := dbConn.getRole(int(token))
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x02})
+		return err
+	}
+	if role != "SUPERUSER" {
+		tcpConn.Write([]byte{0xF0, 0x02})
+		return errors.New("not enough rights to execute command")
+	}
+	userNameLength := request[4]
+	removeUserName := string(request[5 : userNameLength+5])
+	err = dbConn.removeUser(removeUserName)
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x02})
+		return err
+	}
+
+	_, err = tcpConn.Write([]byte{0x0F, 0x00})
+	if err != nil {
+		return err
+	}
+
+	return nil
+
+}
+
+// request to log in by user, replies with OK flag and generated token
+func handleAuthenticationRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
 	var (
 		userNameLength uint8
 		pwdHashLength  uint8
@@ -147,7 +179,7 @@ func handleAuthentificationRequest(request []byte, dbConn DatabaseConnection, tc
 // request to logout
 func handleLogoutRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
 	token := request[:4]
-	err := dbConn.removeConnection(binary.LittleEndian.Uint32(token))
+	err := dbConn.removeConnectionViaToken(binary.LittleEndian.Uint32(token))
 	if err != nil {
 		_, err = tcpConn.Write([]byte{0xF0, 0x02})
 		return err
@@ -177,7 +209,7 @@ func handleShutDownServer(request []byte, dbConn DatabaseConnection, stopServer 
 	if err != nil {
 		return err
 	}
-	time.Sleep(time.Second)
 	stopServer <- true
+	hLog.Printf("Shutting down server from SUPERUSER: %v\n", tcpConn.RemoteAddr())
 	return nil
 }
