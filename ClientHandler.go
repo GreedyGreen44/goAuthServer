@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"log"
@@ -36,6 +37,8 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan b
 		err = handleCreateUserRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x11:
 		err = handleRemoveUserRequest(rcvMsg[1:], dbConn, tcpConn)
+	case 0x12:
+		err = handleChangePwd(rcvMsg[1:], dbConn, tcpConn)
 	case 0x20:
 		err = handleAuthenticationRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x21:
@@ -95,7 +98,7 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 	userNameLength = request[5]
 	newUserName = string(request[6 : userNameLength+6])
 	pwdHashLength = request[userNameLength+6]
-	newPwdHash = request[userNameLength+6 : pwdHashLength+userNameLength+6]
+	newPwdHash = request[userNameLength+7 : pwdHashLength+userNameLength+7]
 
 	err = dbConn.insertNewUser(newUserName, newPwdHash, roleID)
 
@@ -114,7 +117,6 @@ func handleCreateUserRequest(request []byte, dbConn DatabaseConnection, tcpConn 
 
 // handles request to remove user, replies with OK byte
 func handleRemoveUserRequest(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
-	var ()
 
 	token := binary.LittleEndian.Uint32(request[0:4])
 	role, err := dbConn.getRole(int(token))
@@ -155,7 +157,7 @@ func handleAuthenticationRequest(request []byte, dbConn DatabaseConnection, tcpC
 	userNameLength = request[0]
 	loginUserName = string(request[1 : userNameLength+1])
 	pwdHashLength = request[userNameLength+1]
-	loginPwdHash = request[userNameLength+1 : pwdHashLength+userNameLength+1]
+	loginPwdHash = request[userNameLength+2 : pwdHashLength+userNameLength+2]
 
 	userRoleId, userToken, err := dbConn.userAuthentication(loginUserName, loginPwdHash)
 	if err != nil {
@@ -211,5 +213,44 @@ func handleShutDownServer(request []byte, dbConn DatabaseConnection, stopServer 
 	}
 	stopServer <- true
 	hLog.Printf("Shutting down server from SUPERUSER: %v\n", tcpConn.RemoteAddr())
+	return nil
+}
+
+// request to change users password
+func handleChangePwd(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
+	token := binary.LittleEndian.Uint32(request[0:4])
+	oldHashSize := request[4]
+	oldHash := request[5 : oldHashSize+5]
+	newHashSize := request[oldHashSize+5]
+	newHash := request[oldHashSize+6 : newHashSize+oldHashSize+6]
+
+	userName, err := dbConn.getUser(token)
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return err
+	}
+
+	baseHash, err := dbConn.getUserPwd(userName)
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return err
+	}
+
+	if !bytes.Equal(oldHash, baseHash) {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return errors.New("wrong password")
+	}
+
+	err = dbConn.setNewPassword(userName, newHash)
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return err
+	}
+
+	_, err = tcpConn.Write([]byte{0x0F, 0x00})
+	if err != nil {
+		return err
+	}
+
 	return nil
 }

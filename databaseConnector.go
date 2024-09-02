@@ -291,7 +291,7 @@ func (dbConn *DatabaseConnection) getRole(token int) (string, error) {
 	var role string
 	err := dbConn.pool.QueryRow(context.Background(),
 		`select "Roles_name" from public."Roles" r 
-    			join public."Users" u on r."Roles_id"=u."Users_id" 
+    			join public."Users" u on r."Roles_id"=u."Users_roleId" 
     			join public."Connections" c on c."Connection_userId"=u."Users_id" 
 				where c."Connection_token"=$1`,
 		token).Scan(&role)
@@ -303,6 +303,51 @@ func (dbConn *DatabaseConnection) getRole(token int) (string, error) {
 	}
 
 	return role, nil
+
+}
+
+// return userName via token
+func (dbConn *DatabaseConnection) getUser(token uint32) (string, error) {
+	var userName string
+
+	err := dbConn.pool.QueryRow(context.Background(),
+		`select "Users_username" from public."Users" u
+				join public."Connections" c on c."Connection_userId"=u."Users_id"
+				where c."Connection_token"=$1`, token).Scan(&userName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errors.New("no such token in database")
+		}
+		return "", err
+	}
+
+	return userName, nil
+}
+
+// return password hash via userName
+func (dbConn *DatabaseConnection) getUserPwd(userName string) ([]byte, error) {
+	var pwd []byte
+
+	err := dbConn.pool.QueryRow(context.Background(),
+		`select "Users_pswdmd5" from public."Users"
+				where "Users_username" = $1`, userName).Scan(&pwd)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("no such user in database")
+		}
+		return nil, err
+	}
+	return pwd, nil
+}
+
+func (dbConn *DatabaseConnection) setNewPassword(userName string, pwdHash []byte) error {
+	_, err := dbConn.pool.Exec(context.Background(),
+		`update public."Users" set "Users_pswdmd5" = $1
+				where "Users_username" = $2`, pwdHash, userName)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // remove user with removeUserName as name from database
