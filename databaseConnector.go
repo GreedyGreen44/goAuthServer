@@ -340,10 +340,38 @@ func (dbConn *DatabaseConnection) getUserPwd(userName string) ([]byte, error) {
 	return pwd, nil
 }
 
+// set new password to user userName
 func (dbConn *DatabaseConnection) setNewPassword(userName string, pwdHash []byte) error {
 	_, err := dbConn.pool.Exec(context.Background(),
 		`update public."Users" set "Users_pswdmd5" = $1
 				where "Users_username" = $2`, pwdHash, userName)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// change role of user with userName with desiredRole
+func (dbConn *DatabaseConnection) changeRole(userName string, desiredRole string) error {
+	var desiredRoleId int
+	switch desiredRole {
+	case "SUPERUSER":
+		desiredRoleId = 1
+	case "ADMIN":
+		desiredRoleId = 2
+	case "USER":
+		desiredRoleId = 3
+	case "UNASSIGNED":
+		desiredRoleId = 4
+	default:
+		return errors.New("invalid role")
+	}
+	_, err := dbConn.pool.Exec(context.Background(),
+		`update public."Users" as u
+				set "Users_roleId" = $1
+				from public."Roles" as r
+				where  u."Users_roleId" = r."Roles_id" and u."Users_username" = $2`,
+		desiredRoleId, userName)
 	if err != nil {
 		return err
 	}

@@ -39,6 +39,8 @@ func HandleClient(dbConn DatabaseConnection, tcpConn net.Conn, stopServer chan b
 		err = handleRemoveUserRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x12:
 		err = handleChangePwd(rcvMsg[1:], dbConn, tcpConn)
+	case 0x13:
+		err = handleChangeRole(rcvMsg[1:], dbConn, tcpConn)
 	case 0x20:
 		err = handleAuthenticationRequest(rcvMsg[1:], dbConn, tcpConn)
 	case 0x21:
@@ -247,6 +249,37 @@ func handleChangePwd(request []byte, dbConn DatabaseConnection, tcpConn net.Conn
 		return err
 	}
 
+	_, err = tcpConn.Write([]byte{0x0F, 0x00})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// request to change users role
+func handleChangeRole(request []byte, dbConn DatabaseConnection, tcpConn net.Conn) error {
+	token := binary.LittleEndian.Uint32(request[0:4])
+	role, err := dbConn.getRole(int(token))
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return err
+	}
+	if role != "SUPERUSER" {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return errors.New("not enough rights to execute command")
+	}
+
+	userNameSize := request[4]
+	userName := string(request[5 : userNameSize+5])
+	desiredRoleSize := request[userNameSize+5]
+	desiredRole := string(request[userNameSize+6 : userNameSize+6+desiredRoleSize])
+
+	err = dbConn.changeRole(userName, desiredRole)
+	if err != nil {
+		tcpConn.Write([]byte{0xF0, 0x04})
+		return err
+	}
 	_, err = tcpConn.Write([]byte{0x0F, 0x00})
 	if err != nil {
 		return err
